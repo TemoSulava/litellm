@@ -11,9 +11,12 @@ Endpoint
 Docs - https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api
 """
 
+from collections.abc import Sequence
 from typing import Final
 
 import httpx
+from pydantic import ConfigDict, TypeAdapter, with_config
+from typing_extensions import NotRequired, ReadOnly, TypedDict
 
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
@@ -25,6 +28,23 @@ from litellm.types.utils import EmbeddingResponse, Usage
 from ..common_utils import DashScopeError
 
 DEFAULT_API_BASE: Final = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
+@with_config(ConfigDict(extra="allow", strict=True))
+class _DashScopeEmbeddingUsage(TypedDict):
+    prompt_tokens: NotRequired[ReadOnly[int]]
+    total_tokens: NotRequired[ReadOnly[int]]
+
+
+@with_config(ConfigDict(extra="allow", strict=True))
+class _DashScopeEmbeddingBody(TypedDict):
+    data: NotRequired[ReadOnly[list[object]]]
+    model: NotRequired[ReadOnly[str | None]]
+    usage: NotRequired[ReadOnly[_DashScopeEmbeddingUsage | None]]
+    id: NotRequired[ReadOnly[object]]
+
+
+_DASHSCOPE_EMBEDDING_BODY: Final = TypeAdapter(_DashScopeEmbeddingBody)
 
 
 class DashScopeEmbeddingConfig(BaseEmbeddingConfig):
@@ -77,7 +97,7 @@ class DashScopeEmbeddingConfig(BaseEmbeddingConfig):
         self,
         headers: dict,
         model: str,
-        messages: list[AllMessageValues],
+        messages: Sequence[AllMessageValues],
         optional_params: dict,
         litellm_params: dict,
         api_key: str | None = None,
@@ -154,11 +174,13 @@ class DashScopeEmbeddingConfig(BaseEmbeddingConfig):
                 message=message,
             )
 
-        model_response.object = "list"
-        model_response.data = response_json.get("data", [])
-        model_response.model = response_json.get("model", model)
+        body: Final = _DASHSCOPE_EMBEDDING_BODY.validate_python(response_json)
 
-        usage: Final = response_json.get("usage") or {}
+        model_response.object = "list"
+        model_response.data = body.get("data", [])
+        model_response.model = body.get("model", model)
+
+        usage: Final[_DashScopeEmbeddingUsage] = body.get("usage") or {}
         prompt_tokens: Final = usage.get("prompt_tokens", 0)
         total_tokens: Final = usage.get("total_tokens", prompt_tokens)
         setattr(
@@ -171,8 +193,8 @@ class DashScopeEmbeddingConfig(BaseEmbeddingConfig):
             ),
         )
 
-        if "id" in response_json:
-            setattr(model_response, "id", response_json["id"])
+        if "id" in body:
+            setattr(model_response, "id", body["id"])
 
         return model_response
 

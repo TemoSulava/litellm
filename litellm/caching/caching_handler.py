@@ -455,7 +455,7 @@ class LLMCachingHandler:
         if litellm.cache is not None and self._is_call_type_supported_by_cache(original_function=original_function):
             args = args or ()
             # Now that we confirmed caching will happen, prepare kwargs
-            new_kwargs: Final = kwargs.copy()
+            new_kwargs: Final[dict[str, object]] = kwargs.copy()
             new_kwargs.update(
                 convert_args_to_kwargs(
                     self.original_function,
@@ -1134,7 +1134,7 @@ class LLMCachingHandler:
         self,
         result: object,
         original_function: Callable,
-        kwargs: dict[str, Any],
+        kwargs: Mapping[str, object],
         args: tuple[object, ...] | None = None,
     ):
         """
@@ -1162,7 +1162,7 @@ class LLMCachingHandler:
             return
         cache: Final = litellm.cache
 
-        new_kwargs: Final = kwargs.copy()
+        new_kwargs: Final = dict(kwargs)
         new_kwargs.update(
             convert_args_to_kwargs(
                 original_function,
@@ -1364,7 +1364,7 @@ class LLMCachingHandler:
         self,
         logging_obj: LiteLLMLoggingObj,
         model: str,
-        kwargs: dict[str, Any],
+        kwargs: Mapping[str, object],
         cached_result: object,
         is_async: bool,
         is_embedding: bool = False,

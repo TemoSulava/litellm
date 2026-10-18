@@ -59,6 +59,22 @@ if TYPE_CHECKING:
     )
 
 
+class _ProviderPricingFields(TypedDict, total=False):
+    inference_geo: ReadOnly[str]
+    speed: ReadOnly[str]
+
+
+def _provider_pricing_fields(inference_geo: str | None, speed: str | None) -> _ProviderPricingFields:
+    """Provider pricing fields that are set, in ``inference_geo``, ``speed`` order."""
+    if inference_geo is not None and speed is not None:
+        return {"inference_geo": inference_geo, "speed": speed}
+    if inference_geo is not None:
+        return {"inference_geo": inference_geo}
+    if speed is not None:
+        return {"speed": speed}
+    return {}
+
+
 class _ThinkingBlockFragment(TypedDict, total=False):
     type: str | None
     data: str | None
@@ -1185,14 +1201,9 @@ class ChunkProcessor:
 
         # Return a new usage object with the new values
 
-        provider_pricing_fields: Final = {
-            field: value
-            for field, value in (
-                ("inference_geo", calculated_usage_per_chunk["inference_geo"]),
-                ("speed", calculated_usage_per_chunk["speed"]),
-            )
-            if value is not None
-        }
+        provider_pricing_fields: Final = _provider_pricing_fields(
+            calculated_usage_per_chunk["inference_geo"], calculated_usage_per_chunk["speed"]
+        )
 
         returned_usage = Usage(**returned_usage.model_dump(), **provider_pricing_fields)
 

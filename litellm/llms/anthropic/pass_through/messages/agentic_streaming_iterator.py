@@ -17,8 +17,10 @@ execute it.
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any, Final, cast
+
+from pydantic import ConfigDict, TypeAdapter
 
 from litellm._logging import verbose_logger
 from litellm.constants import STREAM_SSE_KEEPALIVE_PING_BYTES
@@ -53,6 +55,13 @@ async def _anext_or_none(iterator: AsyncIterator) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 
+_SSE_DATA: Final = TypeAdapter(dict[str, object], config=ConfigDict(strict=True))
+
+
+def _sse_event(current_event_type: str | None, data: Mapping[str, object]) -> tuple[object, Mapping[str, object]]:
+    return (current_event_type or data.get("type", ""), data)
+
+
 def _parse_sse_events(raw: bytes) -> list[tuple]:
     """Return a list of (event_type, parsed_data_dict) from raw SSE bytes."""
     text: Final = raw.decode("utf-8", errors="replace")
@@ -69,12 +78,11 @@ def _parse_sse_events(raw: bytes) -> list[tuple]:
             continue
         data_str = stripped[len("data:") :].strip()
         try:
-            data = json.loads(data_str)
+            parsed = json.loads(data_str)
         except (json.JSONDecodeError, ValueError):
             continue
-        event_type = current_event_type or data.get("type", "")
+        events.append(_sse_event(current_event_type, _SSE_DATA.validate_python(parsed)))
         current_event_type = None
-        events.append((event_type, data))
     return events
 
 

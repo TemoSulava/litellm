@@ -8,6 +8,8 @@ from typing import Final, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fakeredis import FakeServer
+from fakeredis.aioredis import FakeRedis
 
 import litellm
 from litellm._service_logger import ServiceLogging
@@ -21,6 +23,22 @@ def redis_no_ping():
         # Either raise an exception or return a mock that will handle the task creation
         mock_get_loop.side_effect = RuntimeError("No running event loop")
         yield
+
+
+def _cache_with_fakeredis(
+    monkeypatch: pytest.MonkeyPatch, namespace: str, redis_version: str = "7.0.0"
+) -> tuple[RedisCache, FakeRedis]:
+    redis_client: Final = FakeRedis(server=FakeServer())
+    sync_redis_client: Final = MagicMock()
+    sync_redis_client.info.return_value = {"redis_version": redis_version}
+    with (
+        patch("asyncio.get_running_loop", side_effect=RuntimeError("No running event loop")),
+        patch("litellm._redis.get_redis_client", return_value=sync_redis_client),
+        patch("litellm._redis.get_redis_connection_pool", return_value=MagicMock()),
+    ):
+        redis_cache: Final = RedisCache(namespace=namespace)
+    monkeypatch.setattr(redis_cache, "init_async_client", lambda: redis_client)
+    return redis_cache, redis_client
 
 
 @pytest.fixture
@@ -57,6 +75,71 @@ def test_check_and_fix_namespace_prefixes_keys_sharing_the_namespace_prefix(
     monkeypatch.setenv("REDIS_HOST", "https://my-test-host")
     redis_cache = RedisCache(namespace=namespace)
     assert redis_cache.check_and_fix_namespace(key=key) == expected
+
+
+@pytest.mark.asyncio
+async def test_async_drain_list_to_processing_respects_count_pending_order_and_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis_cache, redis_client = _cache_with_fakeredis(monkeypatch, namespace="tenant")
+    await redis_client.rpush("tenant:buffer", "first", "second", "third")
+
+    drained: Final = await redis_cache.async_drain_list_to_processing(
+        key="buffer",
+        worker_id="worker-1",
+        count=2,
+        ttl_seconds=60,
+    )
+
+    processing_key: Final = "{tenant:buffer}:processing:worker-1"
+    assert drained == ["first", "second"]
+    assert await redis_client.lrange(processing_key, 0, -1) == [b"first", b"second"]
+    await redis_client.rpush("tenant:buffer", "newer")
+
+    pending: Final = await redis_cache.async_drain_list_to_processing(
+        key="buffer",
+        worker_id="worker-1",
+        count=2,
+        ttl_seconds=60,
+    )
+
+    assert pending == ["first", "second"]
+    assert await redis_client.lrange("tenant:buffer", 0, -1) == [b"third", b"newer"]
+    assert set(await redis_client.keys("*")) == {b"tenant:buffer", processing_key.encode()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("redis_version", "expected_items", "expected_processing", "expected_buffer"),
+    [
+        ("6.1.0", ("second", "third"), (b"second", b"third"), (b"first",)),
+        ("6.2.0", ("first", "second"), (b"first", b"second"), (b"third",)),
+    ],
+)
+async def test_async_drain_list_to_processing_uses_supported_move_for_redis_version(
+    monkeypatch: pytest.MonkeyPatch,
+    redis_version: str,
+    expected_items: tuple[str, ...],
+    expected_processing: tuple[bytes, ...],
+    expected_buffer: tuple[bytes, ...],
+) -> None:
+    redis_cache, redis_client = _cache_with_fakeredis(
+        monkeypatch,
+        namespace="tenant",
+        redis_version=redis_version,
+    )
+    await redis_client.rpush("tenant:buffer", "first", "second", "third")
+
+    drained: Final = await redis_cache.async_drain_list_to_processing(
+        key="buffer",
+        worker_id="worker-1",
+        count=2,
+        ttl_seconds=60,
+    )
+
+    assert drained == list(expected_items)
+    assert tuple(await redis_client.lrange("{tenant:buffer}:processing:worker-1", 0, -1)) == expected_processing
+    assert tuple(await redis_client.lrange("tenant:buffer", 0, -1)) == expected_buffer
 
 
 @pytest.mark.parametrize("namespace", [None, "litellm"])
@@ -1033,8 +1116,9 @@ def test_prometheus_services_logger_starts_from_the_breakers_already_built(monke
     monkeypatch.setattr(litellm, "service_callback", ["prometheus_system"])
     gc.collect()
     ServiceLogging()
-    assert REGISTRY.get_sample_value("litellm_redis_circuit_breaker_state", {"state": "closed"}) == (
-        redis_breaker_state_counts()["closed"]
+    assert (
+        REGISTRY.get_sample_value("litellm_redis_circuit_breaker_state", {"state": "closed"})
+        == (redis_breaker_state_counts()["closed"])
     )
 
 

@@ -141,12 +141,10 @@ def _collect_strings(node: object, holders: list[_StringHolder]) -> None:
                     stack.append(value)
 
 
-def _collect_block_text(block: object) -> tuple[_StringHolder, ...]:
-    block_dict: Final = _BODY_BY_REFERENCE.validate_python(block)
-    text: Final = block_dict.get("text")
+def _collect_block_text(block: dict, holders: list[_StringHolder]) -> None:
+    text: Final = block.get("text")
     if isinstance(text, str) and text:
-        return ((block_dict, "text"),)
-    return ()
+        holders.append((block, "text"))
 
 
 def _request_field_holders(body: Mapping[str, object]) -> tuple[_StringHolder, ...]:
@@ -193,7 +191,7 @@ def _extract_converse_texts(
     if not skip_system and not scan_only_tool_results:
         for block in body.get("system") or []:
             if isinstance(block, dict):
-                system_holders.extend(_collect_block_text(block))
+                _collect_block_text(block, system_holders)
 
     request_field_holders: Final = () if scan_only_tool_results else _request_field_holders(body)
 
@@ -208,7 +206,7 @@ def _extract_converse_texts(
                 continue
             if scan_only_tool_results and "toolResult" not in block:
                 continue
-            message_holders.extend(_collect_block_text(block))
+            _collect_block_text(block, message_holders)
             tool_use = block.get("toolUse")
             if isinstance(tool_use, dict):
                 _collect_strings(tool_use.get("input"), message_holders)
@@ -216,7 +214,7 @@ def _extract_converse_texts(
             if isinstance(tool_result, dict):
                 for inner in tool_result.get("content") or []:
                     if isinstance(inner, dict):
-                        message_holders.extend(_collect_block_text(inner))
+                        _collect_block_text(inner, message_holders)
                         _collect_strings(inner.get("json"), message_holders)
 
     holders: Final = [*system_holders, *message_holders, *request_field_holders]
@@ -524,7 +522,7 @@ def _extract_converse_output_texts(
     for block in content_blocks:
         if not isinstance(block, dict):
             continue
-        holders.extend(_collect_block_text(block))
+        _collect_block_text(block, holders)
         tool_use = block.get("toolUse")
         if isinstance(tool_use, dict):
             _collect_strings(tool_use.get("input"), holders)
@@ -532,12 +530,12 @@ def _extract_converse_output_texts(
         if isinstance(reasoning, dict):
             reasoning_text = reasoning.get("reasoningText")
             if isinstance(reasoning_text, dict):
-                holders.extend(_collect_block_text(reasoning_text))
+                _collect_block_text(reasoning_text, holders)
         citations = block.get("citationsContent")
         if isinstance(citations, dict):
             for cited in citations.get("content") or []:
                 if isinstance(cited, dict):
-                    holders.extend(_collect_block_text(cited))
+                    _collect_block_text(cited, holders)
     texts: Final = [_holder_text(holder) for holder in holders]
     return texts, holders
 

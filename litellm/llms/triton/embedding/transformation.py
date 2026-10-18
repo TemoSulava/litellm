@@ -19,7 +19,7 @@ from ..common_utils import TritonError
 
 @with_config(ConfigDict(extra="allow", strict=True, hide_input_in_errors=True))
 class _TritonOutput(TypedDict):
-    shape: ReadOnly[list[int]]
+    shape: ReadOnly[Sequence[int]]
     data: ReadOnly[list[int | float]]
 
 
@@ -153,7 +153,7 @@ class TritonEmbeddingConfig(BaseEmbeddingConfig):
         return TritonError(message=error_message, status_code=status_code, headers=headers)
 
     @staticmethod
-    def split_embedding_by_shape(data: list[float], shape: list[int]) -> list[list[float]]:
+    def split_embedding_by_shape(data: list[float], shape: Sequence[int]) -> list[list[float]]:
         if len(shape) != 2:
             raise ValueError("Shape must be of length 2.")
         embedding_size: Final = shape[1]

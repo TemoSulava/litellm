@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import partial, reduce
 from itertools import accumulate, chain
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Optional, Protocol, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Final, Optional, Protocol, TypeAlias, TypeVar
 
 from pydantic import InstanceOf, TypeAdapter, ValidationError
 from typing_extensions import ReadOnly, TypedDict
@@ -90,7 +90,7 @@ def _reads_flat_texts_only(guardrail: "CustomGuardrail") -> bool:
     return is_compression_guardrail(guardrail) or not guardrail.supports_structured_messages()
 
 
-_StringHolder = tuple[Any, str | int]
+_StringHolder = tuple[object, str | int]
 _LeafIdentity: TypeAlias = tuple[int, str | int]
 
 
@@ -111,6 +111,7 @@ _BlankDrop: TypeAlias = tuple[_ContentHolder, frozenset[int]]
 _BODY_BY_REFERENCE: Final = TypeAdapter(InstanceOf[dict[str, object]])
 _OBJECT_BY_REFERENCE: Final = TypeAdapter(InstanceOf[Mapping[str, object]])
 _ARRAY_BY_REFERENCE: Final = TypeAdapter(InstanceOf[list[object]])
+_UINT32_BY_REFERENCE: Final = TypeAdapter(InstanceOf[int])
 
 
 def _collect_strings(node: object, holders: list[_StringHolder]) -> None:
@@ -125,14 +126,14 @@ def _collect_strings(node: object, holders: list[_StringHolder]) -> None:
     while stack:
         current = stack.pop()
         if isinstance(current, dict):
-            for key, value in current.items():
+            for key, value in _BODY_BY_REFERENCE.validate_python(current).items():
                 if isinstance(value, str):
                     if value:
                         holders.append((current, key))
                 else:
                     stack.append(value)
         elif isinstance(current, list):
-            for index, value in enumerate(current):
+            for index, value in enumerate(_ARRAY_BY_REFERENCE.validate_python(current)):
                 if isinstance(value, str):
                     if value:
                         holders.append((current, index))
@@ -140,10 +141,12 @@ def _collect_strings(node: object, holders: list[_StringHolder]) -> None:
                     stack.append(value)
 
 
-def _collect_block_text(block: dict, holders: list[_StringHolder]) -> None:
-    text: Final = block.get("text")
+def _collect_block_text(block: object) -> tuple[_StringHolder, ...]:
+    block_dict: Final = _BODY_BY_REFERENCE.validate_python(block)
+    text: Final = block_dict.get("text")
     if isinstance(text, str) and text:
-        holders.append((block, "text"))
+        return ((block_dict, "text"),)
+    return ()
 
 
 def _request_field_holders(body: Mapping[str, object]) -> tuple[_StringHolder, ...]:
@@ -190,7 +193,7 @@ def _extract_converse_texts(
     if not skip_system and not scan_only_tool_results:
         for block in body.get("system") or []:
             if isinstance(block, dict):
-                _collect_block_text(block, system_holders)
+                system_holders.extend(_collect_block_text(block))
 
     request_field_holders: Final = () if scan_only_tool_results else _request_field_holders(body)
 
@@ -205,7 +208,7 @@ def _extract_converse_texts(
                 continue
             if scan_only_tool_results and "toolResult" not in block:
                 continue
-            _collect_block_text(block, message_holders)
+            message_holders.extend(_collect_block_text(block))
             tool_use = block.get("toolUse")
             if isinstance(tool_use, dict):
                 _collect_strings(tool_use.get("input"), message_holders)
@@ -213,11 +216,11 @@ def _extract_converse_texts(
             if isinstance(tool_result, dict):
                 for inner in tool_result.get("content") or []:
                     if isinstance(inner, dict):
-                        _collect_block_text(inner, message_holders)
+                        message_holders.extend(_collect_block_text(inner))
                         _collect_strings(inner.get("json"), message_holders)
 
     holders: Final = [*system_holders, *message_holders, *request_field_holders]
-    texts: Final = [container[key] for container, key in holders]
+    texts: Final = [_holder_text(holder) for holder in holders]
     return texts, holders
 
 
@@ -276,6 +279,42 @@ def _holder(body: object, path: JsonPath) -> _StringHolder | None:
 def _leaf_identity(holder: _StringHolder) -> _LeafIdentity:
     container, key = holder
     return id(container), key
+
+
+def _holder_text(holder: _StringHolder) -> str:
+    container, key = holder
+    value: Final = (
+        _BODY_BY_REFERENCE.validate_python(container)[key]
+        if isinstance(container, dict) and isinstance(key, str)
+        else _ARRAY_BY_REFERENCE.validate_python(container)[key]
+        if isinstance(container, list) and isinstance(key, int)
+        else None
+    )
+    if isinstance(value, str):
+        return value
+    raise TypeError
+
+
+def _set_holder(holder: _StringHolder, value: object) -> None:
+    container, key = holder
+    if isinstance(container, dict) and isinstance(key, str):
+        _BODY_BY_REFERENCE.validate_python(container)[key] = value
+        return
+    if isinstance(container, list) and isinstance(key, int):
+        _ARRAY_BY_REFERENCE.validate_python(container)[key] = value
+        return
+    raise TypeError
+
+
+def _delete_holder(holder: _StringHolder) -> None:
+    container, key = holder
+    if isinstance(container, dict) and isinstance(key, str):
+        del _BODY_BY_REFERENCE.validate_python(container)[key]
+        return
+    if isinstance(container, list) and isinstance(key, int):
+        del _ARRAY_BY_REFERENCE.validate_python(container)[key]
+        return
+    raise TypeError
 
 
 def _changed_leaves(
@@ -382,10 +421,10 @@ def _holder_edits(
 def _apply(writes: Sequence[_Assign | _Remove]) -> None:
     for write in writes:
         match write:
-            case _Assign(holder=(container, key), value=value):
-                container[key] = value
-            case _Remove(holder=(container, key)):
-                del container[key]
+            case _Assign(holder=holder, value=value):
+                _set_holder(holder, value)
+            case _Remove(holder=holder):
+                _delete_holder(holder)
 
 
 def _block_text_holder(block: object) -> _ContentHolder | None:
@@ -464,7 +503,7 @@ def _edits_drop_a_text_change(
     if writes is None:
         return True
     _apply(writes)
-    edited: Final = [container[key] for container, key in holders]
+    edited: Final = [_holder_text(holder) for holder in holders]
     return any(
         returned != before and after == before for before, returned, after in zip(texts, guardrailed_texts, edited)
     )
@@ -485,7 +524,7 @@ def _extract_converse_output_texts(
     for block in content_blocks:
         if not isinstance(block, dict):
             continue
-        _collect_block_text(block, holders)
+        holders.extend(_collect_block_text(block))
         tool_use = block.get("toolUse")
         if isinstance(tool_use, dict):
             _collect_strings(tool_use.get("input"), holders)
@@ -493,13 +532,13 @@ def _extract_converse_output_texts(
         if isinstance(reasoning, dict):
             reasoning_text = reasoning.get("reasoningText")
             if isinstance(reasoning_text, dict):
-                _collect_block_text(reasoning_text, holders)
+                holders.extend(_collect_block_text(reasoning_text))
         citations = block.get("citationsContent")
         if isinstance(citations, dict):
             for cited in citations.get("content") or []:
                 if isinstance(cited, dict):
-                    _collect_block_text(cited, holders)
-    texts: Final = [container[key] for container, key in holders]
+                    holders.extend(_collect_block_text(cited))
+    texts: Final = [_holder_text(holder) for holder in holders]
     return texts, holders
 
 
@@ -517,7 +556,7 @@ def _write_back_texts(
     for idx, (container, key) in enumerate(holders):
         if idx >= len(guardrailed_texts):
             break
-        container[key] = guardrailed_texts[idx]
+        _set_holder((container, key), guardrailed_texts[idx])
 
 
 _GroupKey: TypeAlias = str | tuple[str, int]
@@ -544,7 +583,7 @@ class _StreamFrame(TypedDict):
 
 
 def _unpack_uint32(buffer: bytes) -> int:
-    return struct.unpack("!I", buffer)[0]
+    return _UINT32_BY_REFERENCE.validate_python(struct.unpack("!I", buffer)[0])
 
 
 def _collect_stream_delta_text_holders(delta: object) -> list[_DeltaHolder]:
@@ -1217,7 +1256,7 @@ class BedrockPassthroughGuardrailHandler(BaseTranslation):
             texts: Sequence[tuple[_StreamGroupKey, str]] = ()
             if event_type == "contentBlockDelta":
                 try:
-                    payload_dict: dict[str, object] = json.loads(payload_bytes)
+                    payload_dict = _BODY_BY_REFERENCE.validate_python(json.loads(payload_bytes))
                     texts = _delta_frame_texts(payload_dict)
                 except Exception as e:
                     verbose_proxy_logger.debug(
@@ -1255,7 +1294,9 @@ class BedrockPassthroughGuardrailHandler(BaseTranslation):
             headers_bytes = frame_raw[12 : 12 + orig_hdrs_len]
 
             try:
-                payload_dict = json.loads(frame_raw[12 + orig_hdrs_len : orig_total - 4])
+                payload_dict = _BODY_BY_REFERENCE.validate_python(
+                    json.loads(frame_raw[12 + orig_hdrs_len : orig_total - 4])
+                )
                 for local_idx, (_, container, key) in enumerate(
                     _collect_stream_delta_text_holders(payload_dict.get("delta"))
                 ):

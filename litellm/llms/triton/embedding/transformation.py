@@ -1,6 +1,9 @@
+from collections.abc import Sequence
 from typing import Final
 
 import httpx
+from pydantic import ConfigDict, TypeAdapter, with_config
+from typing_extensions import NotRequired, ReadOnly, TypedDict
 
 from litellm.llms.base_llm.chat.transformation import AllMessageValues, BaseLLMException
 from litellm.llms.base_llm.embedding.transformation import (
@@ -12,6 +15,21 @@ from litellm.types.utils import EmbeddingResponse, Usage
 from litellm.utils import token_counter
 
 from ..common_utils import TritonError
+
+
+@with_config(ConfigDict(extra="allow", strict=True, hide_input_in_errors=True))
+class _TritonOutput(TypedDict):
+    shape: ReadOnly[list[int]]
+    data: ReadOnly[list[int | float]]
+
+
+@with_config(ConfigDict(extra="allow", strict=True, hide_input_in_errors=True))
+class _TritonEmbeddingResponse(TypedDict):
+    outputs: ReadOnly[Sequence[_TritonOutput]]
+    model_name: ReadOnly[NotRequired[str]]
+
+
+_TRITON_EMBEDDING_RESPONSE: Final = TypeAdapter(_TritonEmbeddingResponse)
 
 
 class TritonEmbeddingConfig(BaseEmbeddingConfig):
@@ -79,9 +97,10 @@ class TritonEmbeddingConfig(BaseEmbeddingConfig):
         litellm_params: dict = {},
     ) -> EmbeddingResponse:
         try:
-            raw_response_json: Final = raw_response.json()
+            decoded_json: Final[object] = raw_response.json()
         except Exception:
             raise TritonError(message=raw_response.text, status_code=raw_response.status_code)
+        raw_response_json: Final = _TRITON_EMBEDDING_RESPONSE.validate_python(decoded_json)
 
         _embedding_output: Final = []
 

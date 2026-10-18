@@ -17,11 +17,8 @@ Auth: OAuth2 Bearer token (not an API key).
 """
 
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from typing import Final
-
-from pydantic import ConfigDict, TypeAdapter, with_config
-from typing_extensions import NotRequired, ReadOnly, TypedDict
 
 from litellm import verbose_logger
 from litellm.llms.gemini.realtime.transformation import GeminiRealtimeConfig
@@ -31,15 +28,6 @@ from litellm.llms.vertex_ai.audio_transcription.realtime_transformation import (
 )
 from litellm.llms.vertex_ai.common_utils import get_vertex_base_url
 from litellm.llms.vertex_ai.vertex_llm_base import VertexBase
-
-
-@with_config(ConfigDict(extra="allow", strict=True, hide_input_in_errors=True))
-class _ClientEvent(TypedDict):
-    type: ReadOnly[NotRequired[object]]
-    session: ReadOnly[NotRequired[dict[str, object] | None]]
-
-
-_CLIENT_EVENT: Final = TypeAdapter(_ClientEvent)
 
 
 class VertexAIRealtimeConfig(GeminiRealtimeConfig):
@@ -166,7 +154,7 @@ class VertexAIRealtimeConfig(GeminiRealtimeConfig):
         """Return the fully-qualified Vertex AI model resource path."""
         return f"projects/{self._project}/locations/{self._location}/publishers/google/models/{model}"
 
-    def _build_vertex_ai_setup_config(self, model: str, session_params: dict) -> Mapping[str, object]:
+    def _build_vertex_ai_setup_config(self, model: str, session_params: dict) -> dict:
         """Build Vertex AI setup configuration with proper model path and defaults."""
         # Normalize GA-remapped fields (``output_modalities``, nested
         # ``audio.input.transcription``, ``audio.input.turn_detection``) back to
@@ -224,7 +212,7 @@ class VertexAIRealtimeConfig(GeminiRealtimeConfig):
         documents ``setup`` as the first-and-only client message, and a second
         ``setup`` closes the connection with a 1007 policy error.
         """
-        json_message: Final = _CLIENT_EVENT.validate_python(json.loads(message))
+        json_message: Final = json.loads(message)
         msg_type: Final = json_message.get("type")
 
         if msg_type == "session.update":

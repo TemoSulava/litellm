@@ -21,8 +21,6 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 import httpx
-from pydantic import ConfigDict, TypeAdapter, with_config
-from typing_extensions import ReadOnly, TypedDict
 
 import litellm
 from litellm._logging import verbose_logger
@@ -41,15 +39,6 @@ from .base_secret_manager import BaseSecretManager
 
 if TYPE_CHECKING:
     from botocore.awsrequest import HTTPHeaders
-
-
-@with_config(ConfigDict(extra="allow", strict=True, hide_input_in_errors=True))
-class _GetSecretValueResponse(TypedDict):
-    SecretString: ReadOnly[str | None]
-
-
-_GET_SECRET_VALUE_RESPONSE: Final = TypeAdapter(_GetSecretValueResponse)
-_JSON_OBJECT: Final = TypeAdapter(dict[str, object], config=ConfigDict(strict=True, hide_input_in_errors=True))
 
 
 class AWSSecretsManagerV2(BaseAWSLLM, BaseSecretManager):
@@ -165,7 +154,7 @@ class AWSSecretsManagerV2(BaseAWSLLM, BaseSecretManager):
         try:
             response: Final = await async_client.post(url=endpoint_url, headers=headers, data=body.decode("utf-8"))
             response.raise_for_status()
-            return _GET_SECRET_VALUE_RESPONSE.validate_python(response.json())["SecretString"]
+            return response.json()["SecretString"]
         except httpx.TimeoutException:
             raise ValueError("Timeout error occurred")
         except Exception as e:
@@ -215,7 +204,7 @@ class AWSSecretsManagerV2(BaseAWSLLM, BaseSecretManager):
 
         try:
             response: Final = sync_client.post(url=endpoint_url, headers=headers, data=body.decode("utf-8"))
-            return _GET_SECRET_VALUE_RESPONSE.validate_python(response.json())["SecretString"]
+            return response.json()["SecretString"]
         except httpx.TimeoutException:
             raise ValueError("Timeout error occurred")
         except httpx.HTTPStatusError as e:
@@ -435,7 +424,7 @@ class AWSSecretsManagerV2(BaseAWSLLM, BaseSecretManager):
         try:
             response: Final = await async_client.post(url=endpoint_url, headers=headers, data=body.decode("utf-8"))
             response.raise_for_status()
-            return _JSON_OBJECT.validate_python(response.json())
+            return response.json()
         except httpx.HTTPStatusError as err:
             raise ValueError(f"HTTP error occurred: {err.response.text}")
         except httpx.TimeoutException:
@@ -492,7 +481,7 @@ class AWSSecretsManagerV2(BaseAWSLLM, BaseSecretManager):
         try:
             response: Final = await async_client.post(url=endpoint_url, headers=headers, data=body.decode("utf-8"))
             response.raise_for_status()
-            return _JSON_OBJECT.validate_python(response.json())
+            return response.json()
         except httpx.HTTPStatusError as err:
             raise ValueError(f"HTTP error occurred: {err.response.text}")
         except httpx.TimeoutException:
@@ -544,7 +533,7 @@ class AWSSecretsManagerV2(BaseAWSLLM, BaseSecretManager):
         try:
             response: Final = await async_client.post(url=endpoint_url, headers=headers, data=body.decode("utf-8"))
             response.raise_for_status()
-            return _JSON_OBJECT.validate_python(response.json())
+            return response.json()
         except httpx.HTTPStatusError as err:
             raise ValueError(f"HTTP error occurred: {err.response.text}")
         except httpx.TimeoutException:
@@ -624,7 +613,7 @@ class AWSSecretsManagerV2(BaseAWSLLM, BaseSecretManager):
         try:
             response: Final = await async_client.post(url=endpoint_url, headers=headers, data=body.decode("utf-8"))
             response.raise_for_status()
-            return _JSON_OBJECT.validate_python(response.json())
+            return response.json()
         except httpx.HTTPStatusError as err:
             raise ValueError(f"HTTP error occurred: {err.response.text}")
         except httpx.TimeoutException:

@@ -6,6 +6,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, Final, cast
 
+from typing_extensions import ReadOnly, TypedDict, Unpack
+
 import litellm
 from litellm._logging import verbose_logger
 from litellm.integrations.custom_logger import CustomLogger
@@ -20,6 +22,12 @@ if TYPE_CHECKING:
     from .export_engine import FocusExportEngine
 else:
     AsyncIOScheduler = Any
+
+
+class _FocusLoggerOptions(TypedDict, total=False, extra_items=object):
+    turn_off_message_logging: ReadOnly[bool]
+    message_logging: ReadOnly[bool]
+
 
 FOCUS_USAGE_DATA_JOB_NAME: Final = "focus_export_usage_data"
 DEFAULT_DRY_RUN_LIMIT: Final = 500
@@ -40,7 +48,7 @@ class FocusLogger(CustomLogger):
         interval_seconds: int | None = None,
         prefix: str | None = None,
         destination_config: dict[str, Any] | None = None,
-        **kwargs: Any,
+        **kwargs: Unpack[_FocusLoggerOptions],
     ) -> None:
         super().__init__(**kwargs)
         self.provider = (provider or os.getenv("FOCUS_PROVIDER") or "s3").lower()

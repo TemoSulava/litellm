@@ -12,6 +12,8 @@ from types import MappingProxyType
 from typing import Final
 
 import httpx
+from pydantic import ConfigDict, TypeAdapter, with_config
+from typing_extensions import NotRequired, ReadOnly, TypedDict
 
 from litellm._logging import verbose_logger
 from litellm.caching.caching import InMemoryCache
@@ -35,6 +37,17 @@ TOKEN_EXPIRY_BUFFER_MS: Final = 60000
 
 _token_cache: Final = InMemoryCache()
 _NO_LITELLM_PARAMS: Final[Mapping[str, object]] = MappingProxyType({})
+
+
+@with_config(ConfigDict(extra="allow", strict=True))
+class _TokenResponse(TypedDict):
+    tok: ReadOnly[NotRequired[str | None]]
+    exp: ReadOnly[NotRequired[str | int | float | None]]
+    access_token: ReadOnly[NotRequired[str | None]]
+    expires_at: ReadOnly[NotRequired[str | int | float | None]]
+
+
+_TOKEN_RESPONSE: Final = TypeAdapter(_TokenResponse)
 
 
 class GigaChatAuthError(BaseLLMException):
@@ -160,7 +173,7 @@ def _request_token_sync(
     credentials: str,
     scope: str,
     auth_url: str,
-) -> tuple[str, int]:
+) -> tuple[str, int | float | None]:
     """
     Request new access token from GigaChat OAuth endpoint (sync).
 
@@ -197,7 +210,7 @@ async def _request_token_async(
     credentials: str,
     scope: str,
     auth_url: str,
-) -> tuple[str, int]:
+) -> tuple[str, int | float | None]:
     """Async version of _request_token_sync."""
     headers: Final = {
         "Authorization": f"Basic {credentials}",
@@ -228,9 +241,9 @@ async def _request_token_async(
         )
 
 
-def _parse_token_response(response: httpx.Response) -> tuple[str, int]:
+def _parse_token_response(response: httpx.Response) -> tuple[str, int | float | None]:
     """Parse OAuth token response."""
-    data: Final = response.json()
+    data: Final = _TOKEN_RESPONSE.validate_python(response.json())
 
     # GigaChat returns either 'tok'/'exp' or 'access_token'/'expires_at'
     access_token: Final = data.get("tok") or data.get("access_token")
@@ -243,7 +256,7 @@ def _parse_token_response(response: httpx.Response) -> tuple[str, int]:
         )
 
     # expires_at is in milliseconds
-    expires_at: int
+    expires_at: int | float | None
     if isinstance(expires_at_raw, str):
         expires_at = int(expires_at_raw)  # rebind-ok: conditionally assigned from str or int
     else:
